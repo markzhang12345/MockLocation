@@ -5,13 +5,9 @@ import android.content.Context
 import android.location.Location
 import android.location.LocationManager
 import android.location.provider.ProviderProperties
-import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.os.SystemClock
 import android.widget.Toast
 import kotlinx.coroutines.*
-import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.*
@@ -32,45 +28,54 @@ class EnhancedMockLocation {
         "combined"
     )
 
-    // 用于反射的方法
-    private var reflectionMethods = mutableMapOf<String, Method?>()
-
-    // 用于存储伪造轨迹点
     private val locationQueue = ConcurrentLinkedQueue<LocationPoint>()
-
-    // 真实轨迹生成器
-    private val pathGenerator = RealisticPathGenerator()
-
-    // 设备信息模拟
-    private val deviceInfoMocker = DeviceInfoMocker()
-
-    // 位置更新频率 (毫秒)
-    private val updateIntervalMs = 1000L  // 降低频率，防止频繁更新导致的崩溃
+    private val updateIntervalMs = 1000L  // 降低频率
 
     // 模拟运动状态
     private var isPaused = false
     private var currentSpeed = 0.0
-    private var targetSpeed = 0.0
+    private var targetSpeed = 1.5
     private var lastUpdateTime = 0L
 
     // 记录历史位置用于计算更流畅的速度和方向
     private val locationHistory = mutableListOf<LocationPoint>()
     private val historyMaxSize = 5
 
+    // 存储固定路径的坐标点
+    private val fixedPath = listOf(
+        Pair(121.80852250614294, 39.0851850966623),
+        Pair(121.80853150614294, 39.0861470966623),
+        Pair(121.80849950614294, 39.0862590966623),
+        Pair(121.80847250614293, 39.0862910966623),
+        Pair(121.80838350614295, 39.0863570966623),
+        Pair(121.80817250614294, 39.0864660966623),
+        Pair(121.80780850614293, 39.0864060966623),
+        Pair(121.80768650614294, 39.0863050966623),
+        Pair(121.80764250614294, 39.0862000966623),
+        Pair(121.80762850614293, 39.0851640966623),
+        Pair(121.80766950614294, 39.0850620966623),
+        Pair(121.80804650614294, 39.0848380966623),
+        Pair(121.80827950614294, 39.0848590966623),
+        Pair(121.80827950614294, 39.0848590966623),
+        Pair(121.80846850614294, 39.0849850966623),
+        Pair(121.80846850614294, 39.0849850966623)
+    )
+
+    // 当前路径点索引
+    private var currentPathIndex = 0
+    private var interpolationPosition = 0.0
+
     @SuppressLint("MissingPermission")
     fun start(
         context: Context,
         startLat: Double = 39.0851850966623,
         startLng: Double = 121.80852250614294,
-        initialSpeed: Double = 0.1
+        initialSpeed: Double = 1.5
     ) {
-        // 防止重复启动
         if (isRunning.getAndSet(true)) {
             Toast.makeText(context, "位置模拟服务已在运行", Toast.LENGTH_SHORT).show()
             return
         }
-
-        Toast.makeText(context, "位置模拟服务启动中...", Toast.LENGTH_SHORT).show()
 
         // 设置初始目标速度
         targetSpeed = initialSpeed
@@ -78,12 +83,8 @@ class EnhancedMockLocation {
 
         // 初始化位置历史记录
         locationHistory.clear()
-
-        // 预先生成轨迹 - 生成一个更自然的跑步轨迹
-        loadRealisticPath(startLat, startLng)
-
-        // 尝试通过反射获取所有可能有用的方法
-        initReflectionMethods()
+        currentPathIndex = 0
+        interpolationPosition = 0.0
 
         // 启动模拟位置服务
         mockLocationJob = CoroutineScope(Dispatchers.IO).launch {
@@ -91,19 +92,12 @@ class EnhancedMockLocation {
                 val locationManager =
                     context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
-                // 为所有提供者设置模拟位置
                 setupAllProviders(locationManager)
 
-                // 预热系统，使用较少的预热次数
                 warmupLocationServices(locationManager, 3)
 
-                // 创建主线程handler处理UI更新和额外的位置回调
-                val mainHandler = Handler(Looper.getMainLooper())
-
-                // 记录上次更新时间
                 lastUpdateTime = SystemClock.elapsedRealtime()
 
-                // 主循环
                 while (isRunning.get() && isActive) {
                     try {
                         // 计算时间差
@@ -115,10 +109,8 @@ class EnhancedMockLocation {
                         if (isPaused) {
                             currentSpeed = max(0.0, currentSpeed - 0.5 * deltaTimeSeconds)
                         } else {
-                            // 平滑过渡到目标速度
                             val speedDiff = targetSpeed - currentSpeed
                             if (abs(speedDiff) > 0.01) {
-                                // 加速度限制，模拟自然加减速
                                 val maxSpeedChange = 0.3 * deltaTimeSeconds
                                 currentSpeed += speedDiff.coerceIn(-maxSpeedChange, maxSpeedChange)
                             } else {
@@ -126,44 +118,13 @@ class EnhancedMockLocation {
                             }
                         }
 
-                        // 如果有足够的点，获取下一个位置点
-                        if (locationQueue.isEmpty()) {
-                            // 生成更多点
-                            val lastPoint = locationHistory.lastOrNull() ?: LocationPoint(
-                                startLat,
-                                startLng,
-                                0.0,
-                                0.0
-                            )
-                            extendPath(lastPoint.latitude, lastPoint.longitude)
-                        }
+                        val nextLocation = getNextFixedPathLocation(deltaTimeSeconds)
 
-                        // 获取下一个位置，安全处理队列可能为空的情况
-                        val nextLocation = if (currentSpeed > 0.01 && !locationQueue.isEmpty()) {
-                            locationQueue.poll()
-                        } else {
-                            // 原地振动以模拟GPS漂移
-                            val lastPoint = locationHistory.lastOrNull() ?: LocationPoint(
-                                startLat,
-                                startLng,
-                                0.0,
-                                0.0
-                            )
-                            val jitter = 0.000005 * Random.nextDouble() * sin(currentTime / 1000.0)
-                            LocationPoint(
-                                lastPoint.latitude + jitter,
-                                lastPoint.longitude + jitter,
-                                0.0,
-                                Random.nextDouble() * 360
-                            )
-                        }
-
-                        // 维护位置历史以便计算平滑的速度和方向
                         if (locationHistory.size >= historyMaxSize) {
                             locationHistory.removeAt(0)
                         }
 
-                        // 安全检查：确保nextLocation不为null
+                        // 安全检查
                         nextLocation?.let { location ->
                             locationHistory.add(location)
 
@@ -176,36 +137,29 @@ class EnhancedMockLocation {
                             val randomizedBearing =
                                 (smoothedBearing + Random.nextDouble() * 3 - 1.5).toFloat()
 
-                            // 使用标准方法设置位置，避免反射导致的问题
+                            // 使用标准方法设置位置
                             for (provider in providers) {
                                 try {
-                                    if (locationManager.getProvider(provider) != null) {
-                                        setEnhancedMockLocation(
-                                            locationManager,
-                                            provider,
-                                            location.latitude,
-                                            location.longitude,
-                                            randomizedSpeed,
-                                            randomizedBearing
-                                        )
-                                    }
+                                    setEnhancedMockLocation(
+                                        locationManager,
+                                        provider,
+                                        location.latitude,
+                                        location.longitude,
+                                        randomizedSpeed,
+                                        randomizedBearing
+                                    )
                                 } catch (e: Exception) {
-                                    // 忽略个别提供者的错误
+                                    // 忽略错误
                                 }
                             }
                         }
 
-                        // 等待到下一个更新周期
                         delay(updateIntervalMs)
                     } catch (e: Exception) {
-                        // 捕获循环内的异常但继续执行
                         continue
                     }
                 }
-
-                // 清理
                 cleanupProviders(locationManager)
-
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     Toast.makeText(context, "模拟位置服务错误: ${e.message}", Toast.LENGTH_SHORT)
@@ -216,17 +170,74 @@ class EnhancedMockLocation {
         }
     }
 
-    // 设置暂停/继续运动
-    fun togglePause() {
-        isPaused = !isPaused
+    // 获取固定路径上的下一个位置点
+    private fun getNextFixedPathLocation(deltaTimeSeconds: Double): LocationPoint? {
+        if (fixedPath.isEmpty()) return null
+
+        val currentIndex = currentPathIndex
+        val nextIndex = (currentPathIndex + 1) % fixedPath.size
+        val currentPoint = fixedPath[currentIndex]
+        val nextPoint = fixedPath[nextIndex]
+
+        val distance = calculateDistance(
+            currentPoint.second, currentPoint.first,
+            nextPoint.second, nextPoint.first
+        )
+
+        val travelDistance = currentSpeed * deltaTimeSeconds
+
+        interpolationPosition += travelDistance / distance
+
+        if (interpolationPosition >= 1.0) {
+            currentPathIndex = nextIndex
+            interpolationPosition -= 1.0
+        }
+
+        // 插值计算当前位置
+        val lat =
+            currentPoint.second + (nextPoint.second - currentPoint.second) * interpolationPosition
+        val lng =
+            currentPoint.first + (nextPoint.first - currentPoint.first) * interpolationPosition
+
+        // 计算当前方向（从当前点到下一点的方向）
+        val bearing = calculateBearing(
+            currentPoint.second, currentPoint.first,
+            nextPoint.second, nextPoint.first
+        )
+
+        return LocationPoint(lat, lng, currentSpeed, bearing)
     }
 
-    // 设置目标速度 (米/秒)
-    fun setTargetSpeed(speedMps: Double) {
-        targetSpeed = speedMps.coerceIn(0.0, 1.0)  // 限制最高速度为6m/s
+    // 计算两点间的距离（米）
+    private fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val R = 6371000.0 // 地球半径，单位米
+        val phi1 = Math.toRadians(lat1)
+        val phi2 = Math.toRadians(lat2)
+        val deltaPhi = Math.toRadians(lat2 - lat1)
+        val deltaLambda = Math.toRadians(lon2 - lon1)
+
+        val a = sin(deltaPhi / 2) * sin(deltaPhi / 2) +
+                cos(phi1) * cos(phi2) *
+                sin(deltaLambda / 2) * sin(deltaLambda / 2)
+        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
+
+        return R * c
     }
 
-    // 预热位置服务，发送一系列初始位置以稳定系统
+    // 计算两点间的方位角
+    private fun calculateBearing(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val phi1 = Math.toRadians(lat1)
+        val phi2 = Math.toRadians(lat2)
+        val deltaLambda = Math.toRadians(lon2 - lon1)
+
+        val y = sin(deltaLambda) * cos(phi2)
+        val x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(deltaLambda)
+        val theta = atan2(y, x)
+
+        return (Math.toDegrees(theta) + 360) % 360
+    }
+
+    // 预热位置服务
     private fun warmupLocationServices(locationManager: LocationManager, count: Int) {
         try {
             val firstPoint = locationQueue.peek() ?: return
@@ -235,17 +246,15 @@ class EnhancedMockLocation {
             for (i in 0 until count) {
                 for (provider in providers) {
                     try {
-                        if (locationManager.getProvider(provider) != null) {
-                            val jitter = 0.000001 * (i - count / 2)
-                            setEnhancedMockLocation(
-                                locationManager,
-                                provider,
-                                firstPoint.latitude + jitter,
-                                firstPoint.longitude + jitter,
-                                0.0,
-                                0f
-                            )
-                        }
+                        val jitter = 0.000001 * (i - count / 2)
+                        setEnhancedMockLocation(
+                            locationManager,
+                            provider,
+                            firstPoint.latitude + jitter,
+                            firstPoint.longitude + jitter,
+                            0.0,
+                            0f
+                        )
                     } catch (e: Exception) {
                         // 忽略错误
                     }
@@ -277,20 +286,6 @@ class EnhancedMockLocation {
         return (atan2(sinSum, cosSum) * 180.0 / Math.PI + 360) % 360
     }
 
-    // 初始化可能有用的反射方法 - 简化反射操作以减少崩溃可能
-    private fun initReflectionMethods() {
-        // 仅保留最可能成功的方法
-        try {
-            reflectionMethods["setLocation"] = LocationManager::class.java.getDeclaredMethod(
-                "setLocation",
-                String::class.java,
-                Location::class.java
-            ).apply { isAccessible = true }
-        } catch (e: Exception) {
-            // 忽略错误
-        }
-    }
-
     // 设置所有位置提供者
     @SuppressLint("MissingPermission")
     private fun setupAllProviders(locationManager: LocationManager) {
@@ -303,7 +298,7 @@ class EnhancedMockLocation {
         for (provider in mainProviders) {
             try {
                 // 检查提供者是否已经存在
-                if (locationManager.getAllProviders().contains(provider)) {
+                if (locationManager.allProviders.contains(provider)) {
                     try {
                         locationManager.removeTestProvider(provider)
                     } catch (e: Exception) {
@@ -333,7 +328,7 @@ class EnhancedMockLocation {
         }
     }
 
-    // 创建增强的模拟位置对象 - 简化版本，确保兼容性
+    // 创建增强的模拟位置对象
     private fun createEnhancedMockLocation(
         provider: String,
         latitude: Double,
@@ -359,13 +354,6 @@ class EnhancedMockLocation {
 
         // 设置方向
         mockLocation.bearing = bearing
-
-        // 高版本的精度设置
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            mockLocation.bearingAccuracyDegrees = 1.0f
-            mockLocation.speedAccuracyMetersPerSecond = 0.5f
-            mockLocation.verticalAccuracyMeters = 2.0f
-        }
 
         return mockLocation
     }
@@ -394,7 +382,7 @@ class EnhancedMockLocation {
     private fun cleanupProviders(locationManager: LocationManager) {
         for (provider in providers) {
             try {
-                if (locationManager.getAllProviders().contains(provider)) {
+                if (locationManager.allProviders.contains(provider)) {
                     locationManager.removeTestProvider(provider)
                 }
             } catch (e: Exception) {
@@ -408,7 +396,6 @@ class EnhancedMockLocation {
             mockLocationJob?.cancel()
             mockLocationJob = null
 
-            // 移除所有测试提供者
             try {
                 val locationManager =
                     context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -417,25 +404,8 @@ class EnhancedMockLocation {
                 // 忽略可能的异常
             }
 
-            Toast.makeText(context, "高级位置模拟服务已停止", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "位置模拟服务已停止", Toast.LENGTH_SHORT).show()
         }
-    }
-
-    // 加载一个真实的跑步路线
-    private fun loadRealisticPath(startLat: Double, startLng: Double) {
-        locationQueue.clear()
-
-        // 生成一个真实的跑步路线
-        val pathPoints = pathGenerator.generateRunningPath(startLat, startLng)
-
-        // 加入队列
-        locationQueue.addAll(pathPoints)
-    }
-
-    // 扩展路径
-    private fun extendPath(lastLat: Double, lastLng: Double) {
-        val newPoints = pathGenerator.extendPath(lastLat, lastLng)
-        locationQueue.addAll(newPoints)
     }
 
     // 位置点数据类
@@ -445,120 +415,4 @@ class EnhancedMockLocation {
         val speed: Double,
         val bearing: Double
     )
-
-    // 真实路径生成器
-    inner class RealisticPathGenerator {
-        // 路线规划参数
-        private val segmentLength = 3.0  // 每段路径长度（米）
-        private val turnProbability = 0.2  // 转弯概率
-        private val maxTurnAngle = 30.0  // 最大转弯角度
-
-        // 路径随机性
-        private val random = Random(System.currentTimeMillis())
-
-        // 生成初始跑步路径
-        fun generateRunningPath(startLat: Double, startLng: Double): List<LocationPoint> {
-            val points = mutableListOf<LocationPoint>()
-
-            var currentLat = startLat
-            var currentLng = startLng
-            var currentBearing = 0.0  // 初始方向（正北）
-
-            // 减少生成的点数，避免内存问题
-            for (i in 0 until 100) {
-                // 路径规划逻辑
-                if (random.nextDouble() < turnProbability) {
-                    // 随机转弯
-                    val turnAngle = random.nextDouble() * maxTurnAngle * 2 - maxTurnAngle
-                    currentBearing = (currentBearing + turnAngle + 360.0) % 360.0
-                }
-
-                // 计算下一个点
-                val distance = segmentLength / 111320.0  // 转换为度
-                val dx = distance * sin(Math.toRadians(currentBearing))
-                val dy = distance * cos(Math.toRadians(currentBearing))
-
-                currentLat += dy
-                currentLng += dx
-
-                // 添加到路径
-                points.add(LocationPoint(currentLat, currentLng, 0.0, currentBearing))
-            }
-
-            return points
-        }
-
-        // 扩展现有路径
-        fun extendPath(lastLat: Double, lastLng: Double): List<LocationPoint> {
-            val points = mutableListOf<LocationPoint>()
-
-            var currentLat = lastLat
-            var currentLng = lastLng
-
-            // 计算当前方向（如果是连续的路径）
-            val prevBearing = locationHistory.lastOrNull()?.bearing ?: 0.0
-            var currentBearing = prevBearing
-
-            // 减少生成的点数
-            for (i in 0 until 50) {
-                // 路径规划逻辑
-                if (random.nextDouble() < turnProbability) {
-                    // 随机转弯，但保持转弯幅度温和
-                    val turnAngle = random.nextDouble() * maxTurnAngle * 2 - maxTurnAngle
-                    currentBearing = (currentBearing + turnAngle + 360.0) % 360.0
-                }
-
-                // 计算下一个点
-                val distance = segmentLength / 111320.0  // 转换为度
-                val dx = distance * sin(Math.toRadians(currentBearing))
-                val dy = distance * cos(Math.toRadians(currentBearing))
-
-                currentLat += dy
-                currentLng += dx
-
-                // 添加到路径
-                points.add(LocationPoint(currentLat, currentLng, 0.0, currentBearing))
-            }
-
-            return points
-        }
-    }
-
-    // 设备信息模拟器 - 简化版本
-    inner class DeviceInfoMocker {
-        // 卫星信息数据类
-        inner class SatelliteInfo(
-            val id: Int,
-            val elevation: Int,
-            val azimuth: Int,
-            val snr: Float,
-            val used: Boolean
-        )
-
-        // 随机信号强度变化
-        fun getGpsSignalStrength(): Float {
-            return 0.8f + Random.nextFloat() * 0.2f
-        }
-
-        // 模拟卫星信息
-        fun getSatellitesInfo(): List<SatelliteInfo> {
-            val satellites = mutableListOf<SatelliteInfo>()
-            // 减少卫星数量，避免可能的内存问题
-            val visibleCount = 5 + Random.nextInt(3)
-
-            for (i in 0 until visibleCount) {
-                satellites.add(
-                    SatelliteInfo(
-                        id = Random.nextInt(1, 32),
-                        elevation = Random.nextInt(15, 90),
-                        azimuth = Random.nextInt(0, 360),
-                        snr = 25f + Random.nextFloat() * 20f,
-                        used = Random.nextBoolean()
-                    )
-                )
-            }
-
-            return satellites
-        }
-    }
 }
