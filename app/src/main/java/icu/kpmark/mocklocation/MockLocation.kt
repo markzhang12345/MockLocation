@@ -21,44 +21,86 @@ class EnhancedMockLocation {
     private val providers = arrayOf(
         LocationManager.GPS_PROVIDER,
         LocationManager.NETWORK_PROVIDER,
-        LocationManager.PASSIVE_PROVIDER,
-        "passive",
-        "fused",
-        "merged",
-        "combined"
+        LocationManager.PASSIVE_PROVIDER
     )
 
     private val locationQueue = ConcurrentLinkedQueue<LocationPoint>()
     private val updateIntervalMs = 1000L  // 降低频率
 
     // 模拟运动状态
-    private var isPaused = false
     private var currentSpeed = 0.0
-    private var targetSpeed = 1.5
+    private var targetSpeed = 2.0
     private var lastUpdateTime = 0L
 
     // 记录历史位置用于计算更流畅的速度和方向
     private val locationHistory = mutableListOf<LocationPoint>()
     private val historyMaxSize = 5
 
-    // 存储固定路径的坐标点
+    // 存储固定路径的坐标点(AI优化)
     private val fixedPath = listOf(
-        Pair(121.80852250614294, 39.0851850966623),
-        Pair(121.80853150614294, 39.0861470966623),
-        Pair(121.80849950614294, 39.0862590966623),
-        Pair(121.80847250614293, 39.0862910966623),
-        Pair(121.80838350614295, 39.0863570966623),
-        Pair(121.80817250614294, 39.0864660966623),
-        Pair(121.80780850614293, 39.0864060966623),
-        Pair(121.80768650614294, 39.0863050966623),
-        Pair(121.80764250614294, 39.0862000966623),
-        Pair(121.80762850614293, 39.0851640966623),
-        Pair(121.80766950614294, 39.0850620966623),
-        Pair(121.80804650614294, 39.0848380966623),
-        Pair(121.80827950614294, 39.0848590966623),
-        Pair(121.80827950614294, 39.0848590966623),
-        Pair(121.80846850614294, 39.0849850966623),
-        Pair(121.80846850614294, 39.0849850966623)
+        // 起始点
+        Pair(121.80852250614294, 39.0851850966623), // P0
+
+        // 北侧直道（原P0-P1，已添加点）
+        Pair(121.80853150614294, 39.0861470966623), // P1
+
+        // 北侧弯道（原P1-P2，插入2个点）
+        Pair(121.80852083947627, 39.08618442999563),
+        Pair(121.8085101728096, 39.086221763329296),
+        Pair(121.80849950614294, 39.0862590966623), // P2
+
+        // 弯道过渡（原P2-P3，插入2个点）
+        Pair(121.80848617347627, 39.086275763329296),
+        Pair(121.80847950614293, 39.08628342999563),
+        Pair(121.80847250614293, 39.0862910966623), // P3
+
+        // 弯道（原P3-P4，插入2个点）
+        Pair(121.80843450614294, 39.0863210966623),
+        Pair(121.80840950614294, 39.0863390966623),
+        Pair(121.80838350614295, 39.0863570966623), // P4
+
+        // 弯道（原P4-P5，插入2个点）
+        Pair(121.80830350614294, 39.0863960966623),
+        Pair(121.80823850614294, 39.0864310966623),
+        Pair(121.80817250614294, 39.0864660966623), // P5
+
+        // 西侧弯道（原P5-P6，插入2个点）
+        Pair(121.80805117280961, 39.0864460966623),
+        Pair(121.80792983947627, 39.0864260966623),
+        Pair(121.80780850614293, 39.0864060966623), // P6
+
+        // 弯道（原P6-P7，插入1个点）
+        Pair(121.80774750614293, 39.0863555966623),
+        Pair(121.80768650614294, 39.0863050966623), // P7
+
+        // 南侧直道（原P7-P8，插入1个点）
+        Pair(121.80766450614294, 39.0862525966623),
+        Pair(121.80764250614294, 39.0862000966623), // P8
+
+        // 南侧长直道（原P8-P9，插入3个点）
+        Pair(121.80763900614294, 39.0859410966623),
+        Pair(121.80763550614294, 39.0856820966623),
+        Pair(121.80763200614294, 39.0854230966623),
+        Pair(121.80762850614293, 39.0851640966623), // P9
+
+        // 东南弯道（原P9-P10，插入1个点）
+        Pair(121.80764850614293, 39.0851130966623),
+        Pair(121.80766950614294, 39.0850620966623), // P10
+
+        // 东侧弯道（原P10-P11，插入2个点）
+        Pair(121.80780750614294, 39.0849500966623),
+        Pair(121.80792750614294, 39.0848940966623),
+        Pair(121.80804650614294, 39.0848380966623), // P11
+
+        // 东侧直道（原P11-P12，插入1个点）
+        Pair(121.80816300614294, 39.0848485966623),
+        Pair(121.80827950614294, 39.0848590966623), // P12
+
+        // 闭合路径（原P12-P13-P0，插入2个点）
+        Pair(121.80837400614294, 39.0849220966623),
+        Pair(121.80846850614294, 39.0849850966623), // P13
+        Pair(121.80848650614294, 39.085051763329),
+        Pair(121.80850450614294, 39.08511842999566)
     )
 
     // 当前路径点索引
@@ -79,7 +121,7 @@ class EnhancedMockLocation {
 
         // 设置初始目标速度
         targetSpeed = initialSpeed
-        currentSpeed = 0.0
+        currentSpeed = 2.5
 
         // 初始化位置历史记录
         locationHistory.clear()
@@ -105,18 +147,7 @@ class EnhancedMockLocation {
                         val deltaTimeSeconds = (currentTime - lastUpdateTime) / 1000.0
                         lastUpdateTime = currentTime
 
-                        // 如果暂停状态，则逐渐降低速度
-                        if (isPaused) {
-                            currentSpeed = max(0.0, currentSpeed - 0.5 * deltaTimeSeconds)
-                        } else {
-                            val speedDiff = targetSpeed - currentSpeed
-                            if (abs(speedDiff) > 0.01) {
-                                val maxSpeedChange = 0.3 * deltaTimeSeconds
-                                currentSpeed += speedDiff.coerceIn(-maxSpeedChange, maxSpeedChange)
-                            } else {
-                                currentSpeed = targetSpeed
-                            }
-                        }
+                        currentSpeed = targetSpeed
 
                         val nextLocation = getNextFixedPathLocation(deltaTimeSeconds)
 
@@ -128,7 +159,6 @@ class EnhancedMockLocation {
                         nextLocation?.let { location ->
                             locationHistory.add(location)
 
-                            // 计算平滑的方向和速度
                             val smoothedBearing = calculateSmoothedBearing()
                             val smoothedSpeed = if (currentSpeed > 0.1) currentSpeed else 0.0
 
@@ -264,7 +294,7 @@ class EnhancedMockLocation {
                 Thread.sleep(100)
             }
         } catch (e: Exception) {
-            // 忽略整个预热过程的错误
+             // 忽略可能的异常
         }
     }
 
@@ -306,7 +336,6 @@ class EnhancedMockLocation {
                     }
                 }
 
-                // 添加测试提供者，使用适当的精度和权限设置
                 locationManager.addTestProvider(
                     provider,
                     true,   // requiresNetwork
@@ -328,7 +357,7 @@ class EnhancedMockLocation {
         }
     }
 
-    // 创建增强的模拟位置对象
+    // 创建模拟位置对象
     private fun createEnhancedMockLocation(
         provider: String,
         latitude: Double,
@@ -358,7 +387,7 @@ class EnhancedMockLocation {
         return mockLocation
     }
 
-    // 设置增强的模拟位置 - 简化版本
+    // 设置模拟位置
     private fun setEnhancedMockLocation(
         locationManager: LocationManager,
         provider: String,

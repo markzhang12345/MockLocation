@@ -15,12 +15,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var stopButton: Button
     private lateinit var statusTextView: TextView
 
-    private lateinit var mockLocation: EnhancedMockLocation // 位置模拟器
+    private lateinit var mockLocation: EnhancedMockLocation
 
-    override fun onCreate(savedInstanceState: Bundle?) { // 空Bundle对象，用于保存Activity的状态
-        super.onCreate(savedInstanceState) // 调用父类的onCreate方法，确保正常初始化
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContentView(R.layout.activity_main) // 找到布局文件并加载
+        setContentView(R.layout.activity_main)
 
         // 使用根视图处理窗口插图
         val rootView = findViewById<View>(android.R.id.content)
@@ -30,21 +30,19 @@ class MainActivity : AppCompatActivity() {
             insets
         }
 
-        initViews() // 初始化UI组件
+        initViews()
 
-        mockLocation = EnhancedMockLocation() // 初始化位置模拟器
+        mockLocation = EnhancedMockLocation()
 
-        setupButtonListeners() // 设置按钮点击事件
+        setupButtonListeners()
     }
 
-    // 初始化UI组件
     private fun initViews() {
         startButton = findViewById(R.id.startButton)
         stopButton = findViewById(R.id.stopButton)
         statusTextView = findViewById(R.id.statusTextView)
     }
 
-    // 设置按钮点击事件
     private fun setupButtonListeners() {
         startButton.setOnClickListener {
             mockLocation.start(this)
@@ -57,7 +55,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // 更新UI状态
     private fun updateUIState(isRunning: Boolean) {
         if (isRunning) {
             // 模拟位置运行中
@@ -72,7 +69,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // 在Activity销毁时停止位置模拟
     override fun onDestroy() {
         super.onDestroy()
 
