@@ -39,7 +39,3 @@ adb shell appops set icu.kpmark.mocklocation android:mock_location allow
 ![alt text](./img/ab89f5e5f16c228a8ac9cc3e15a9097f.jpg)
 
 ![alt text](./img/598ED440167D738498B7661B1D8440E0.jpg)
-
-> 很遗憾，模拟定位所需要的`Allow_Mock_Location`权限不能出现在`realse`版本中，所以暂时提供不了打包版本
->
-> 替代方案思考中
